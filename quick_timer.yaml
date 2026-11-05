@@ -1,0 +1,195 @@
+blueprint:
+  name: Quick Timer (auto-off with menu)
+  description: >-
+    A SmartThings-style one-off auto-off timer for a light, fan or switch.
+
+
+    - Turn the device on and a default timer starts; when it finishes the device turns off.
+
+    - Pick 10 / 30 / 60 minutes or 2 hours from the dropdown for a one-time length
+    (the device turns on if it was off), or pick Stay on to cancel the timer.
+
+    - Start the timer from its own popup (Set) and the device turns on if it was off.
+
+    - Turning the device off any way cancels the timer.
+
+
+    Before using it, create three helpers (see the README): a Timer, a Number
+    (the default minutes) and a Dropdown whose options are exactly:
+    Choose timer, 10 minutes, 30 minutes, 60 minutes, 2 hours, Stay on.
+  domain: automation
+  author: StoicPeak
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    target_device:
+      name: Light, fan or switch
+      description: The device to turn off automatically.
+      selector:
+        entity:
+          domain:
+            - light
+            - fan
+            - switch
+    timer:
+      name: Timer helper
+      description: A Timer helper dedicated to this device. Turn on "Restore" for it.
+      selector:
+        entity:
+          domain: timer
+    default_minutes:
+      name: Default minutes
+      description: A Number helper holding the default auto-off length in minutes.
+      selector:
+        entity:
+          domain: input_number
+    menu:
+      name: Timer menu
+      description: >-
+        A Dropdown helper with exactly these options: Choose timer, 10 minutes,
+        30 minutes, 60 minutes, 2 hours, Stay on.
+      selector:
+        entity:
+          domain: input_select
+
+mode: queued
+max: 10
+
+variables:
+  target_device: !input target_device
+  default_minutes: !input default_minutes
+
+triggers:
+  - trigger: state
+    entity_id: !input target_device
+    from: "off"
+    to: "on"
+    id: device_on
+  - trigger: state
+    entity_id: !input target_device
+    to: "off"
+    id: device_off
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input timer
+    id: finished
+  - trigger: event
+    event_type: timer.started
+    event_data:
+      entity_id: !input timer
+    id: timer_set
+  - trigger: event
+    event_type: timer.restarted
+    event_data:
+      entity_id: !input timer
+    id: timer_set
+  - trigger: state
+    entity_id: !input menu
+    to: 10 minutes
+    id: menu_10
+  - trigger: state
+    entity_id: !input menu
+    to: 30 minutes
+    id: menu_30
+  - trigger: state
+    entity_id: !input menu
+    to: 60 minutes
+    id: menu_60
+  - trigger: state
+    entity_id: !input menu
+    to: 2 hours
+    id: menu_120
+  - trigger: state
+    entity_id: !input menu
+    to: Stay on
+    id: stay
+
+actions:
+  - choose:
+      # Device turned on with no timer running: start the default timer.
+      - conditions:
+          - condition: trigger
+            id: device_on
+          - condition: state
+            entity_id: !input timer
+            state: idle
+        sequence:
+          - action: timer.start
+            target:
+              entity_id: !input timer
+            data:
+              duration: "{{ (states(default_minutes) | int(10)) * 60 }}"
+      # Timer finished: turn the device off.
+      - conditions:
+          - condition: trigger
+            id: finished
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: !input target_device
+      # Device turned off any way: cancel the timer.
+      - conditions:
+          - condition: trigger
+            id: device_off
+        sequence:
+          - action: timer.cancel
+            target:
+              entity_id: !input timer
+      # Timer started from its popup (Set): make sure the device is on.
+      - conditions:
+          - condition: trigger
+            id: timer_set
+          - condition: state
+            entity_id: !input target_device
+            state: "off"
+        sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: !input target_device
+      # Menu pick with a length: start the timer first, then turn the device on.
+      - conditions:
+          - condition: trigger
+            id:
+              - menu_10
+              - menu_30
+              - menu_60
+              - menu_120
+        sequence:
+          - action: timer.start
+            target:
+              entity_id: !input timer
+            data:
+              duration: >-
+                {{ {'menu_10': 10, 'menu_30': 30, 'menu_60': 60, 'menu_120': 120}[trigger.id] * 60 }}
+          - if:
+              - condition: state
+                entity_id: !input target_device
+                state: "off"
+            then:
+              - action: homeassistant.turn_on
+                target:
+                  entity_id: !input target_device
+      # Stay on: cancel the timer.
+      - conditions:
+          - condition: trigger
+            id: stay
+        sequence:
+          - action: timer.cancel
+            target:
+              entity_id: !input timer
+  # Menu is one-shot: put it back to "Choose timer" after any pick.
+  - if:
+      - condition: trigger
+        id:
+          - menu_10
+          - menu_30
+          - menu_60
+          - menu_120
+          - stay
+    then:
+      - action: input_select.select_option
+        target:
+          entity_id: !input menu
+        data:
+          option: Choose timer
